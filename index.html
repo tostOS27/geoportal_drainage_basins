@@ -114,6 +114,9 @@
 		<script src="https://unpkg.com/esri-leaflet@3.0.12/dist/esri-leaflet.js"></script>
 		<script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
 		<script>
+			// Keep a persistent marker for the last search result, so its popup can be reopened.
+			let searchResultMarker = null;
+
 			const map = L.map('map').setView([54, 15], 4);
 
 			const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -137,30 +140,71 @@
 					searchLabel: 'Szukaj miejsca…',
 					autoComplete: true,
 					autoCompleteDelay: 250,
-					showMarker: true,
+
+					// We'll create our own persistent marker + popup (so user can reopen it by clicking).
+					showMarker: false,
 					showPopup: false,
-					marker: {
-						icon: new L.Icon.Default(),
-					},
+
 					animateZoom: true,
 					keepResult: true,
 				});
 
 				map.addControl(searchControl);
 
+				function buildSearchPopupHtml(data) {
+					const title = escapeHtml(data?.placeTitle ?? 'n/a');
+					const basin = escapeHtml(data?.basinName ?? 'n/a');
+					return `<strong>${title}</strong><br/>Zlewnia: ${basin}`;
+				}
+
+				function ensureSearchMarker(latlng) {
+					if (!searchResultMarker) {
+						searchResultMarker = L.marker(latlng, { keyboard: true }).addTo(map);
+
+						// Store data on the marker so it persists after closing the popup.
+						searchResultMarker._searchData = {
+							placeTitle: null,
+							basinObjectId: null,
+							basinName: null,
+							regionCode: null,
+						};
+
+						// Bind an (initially empty) popup; we will set content from _searchData.
+						searchResultMarker.bindPopup('', { closeButton: true, autoPan: true });
+
+						// Whenever the popup opens (after clicking marker), refresh content from stored data.
+						searchResultMarker.on('popupopen', () => {
+							searchResultMarker.setPopupContent(buildSearchPopupHtml(searchResultMarker._searchData));
+						});
+					} else {
+						searchResultMarker.setLatLng(latlng);
+					}
+					return searchResultMarker;
+				}
+
 				// When user selects a search result, show which basin polygon contains it.
 				map.on('geosearch/showlocation', (evt) => {
 					const loc = evt?.location;
 					if (!loc) return;
+
 					const latlng = L.latLng(loc.y, loc.x);
 					const placeNameRaw = loc.label ?? loc.raw?.display_name ?? loc.raw?.name ?? `${loc.y}, ${loc.x}`;
-					const placeTitle = escapeHtml(placeNameRaw);
+					const placeTitle = placeNameRaw;
+
+					const marker = ensureSearchMarker(latlng);
+
+					// Set initial data immediately (so popup can open right away)
+					marker._searchData.placeTitle = placeTitle;
+					marker._searchData.basinObjectId = null;
+					marker._searchData.basinName = '...';
+					marker._searchData.regionCode = null;
+
+					marker.setPopupContent(buildSearchPopupHtml(marker._searchData));
+					marker.openPopup();
 
 					if (!riverBasinDistricts) {
-						L.popup()
-							.setLatLng(latlng)
-							.setContent(`<strong>${placeTitle}</strong><br/>Zlewnia: n/a`)
-							.openOn(map);
+						marker._searchData.basinName = 'n/a';
+						marker.setPopupContent(buildSearchPopupHtml(marker._searchData));
 						return;
 					}
 
@@ -169,16 +213,23 @@
 						.intersects(latlng)
 						.run((error, featureCollection) => {
 							let basinName = null;
+							let basinObjectId = null;
+							let regionCode = null;
+
 							if (!error && featureCollection?.features?.length) {
 								const props = featureCollection.features[0]?.properties ?? {};
 								const key = featureKeyFromProperties(props);
+								basinObjectId = key;
 								basinName = key ? dictById.get(key)?.name : null;
+								regionCode = key ? dictById.get(key)?.lastAttr : null;
 							}
 
-							L.popup()
-								.setLatLng(latlng)
-								.setContent(`<strong>${placeTitle}</strong><br/>Zlewnia: ${escapeHtml(basinName ?? 'n/a')}`)
-								.openOn(map);
+							marker._searchData.basinObjectId = basinObjectId;
+							marker._searchData.basinName = basinName ?? 'n/a';
+							marker._searchData.regionCode = regionCode ?? null;
+
+							// Update popup content immediately if it's open; otherwise it will refresh on next open.
+							marker.setPopupContent(buildSearchPopupHtml(marker._searchData));
 						});
 				});
 			} else {
@@ -573,4 +624,3 @@
 		</script>
 	</body>
 </html>
-
