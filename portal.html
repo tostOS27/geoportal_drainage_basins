@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Leaflet + OpenStreetMap</title>
+
+		<link rel="stylesheet" href="leaflet.css" />
+		<link
+			rel="stylesheet"
+			href="https://unpkg.com/leaflet-geosearch@4.2.2/dist/geosearch.css"
+		/>
+
+		<style>
+			html,
+			body {
+				height: 100%;
+				margin: 0;
+			}
+			#app {
+				height: 100%;
+				width: 100%;
+				position: relative;
+			}
+			#map {
+				height: 100%;
+				width: 100%;
+			}
+			#sidebar {
+				position: absolute;
+				top: 110px;
+				right: 12px;
+				z-index: 1000;
+				width: 260px;
+				max-width: calc(100% - 24px);
+				background: rgba(255, 255, 255, 0.92);
+				backdrop-filter: blur(4px);
+				border: 1px solid rgba(0, 0, 0, 0.12);
+				border-radius: 10px;
+				box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
+				font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+				overflow: hidden;
+			}
+			#sidebar h3 {
+				margin: 0;
+				padding: 10px 12px;
+				font-size: 14px;
+				font-weight: 700;
+				border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+			}
+			#legend {
+				width: 100%;
+				border-collapse: collapse;
+			}
+			#legend td {
+				padding: 10px 12px;
+				font-size: 13px;
+				border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+				cursor: default;
+			}
+			#legend tr:last-child td {
+				border-bottom: none;
+			}
+			#legend tr:hover td {
+				background: rgba(0, 105, 194, 0.08);
+			}
+			.legend-swatch {
+				display: inline-block;
+				width: 12px;
+				height: 12px;
+				border-radius: 3px;
+				margin-right: 8px;
+				vertical-align: -2px;
+				border: 1px solid rgba(0, 0, 0, 0.18);
+			}
+			.legend-code {
+				font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+				font-size: 12px;
+				color: rgba(0, 0, 0, 0.7);
+				text-align: right;
+				white-space: nowrap;
+			}
+		</style>
+	</head>
+	<body>
+		<div id="app">
+			<div id="map"></div>
+			<div id="sidebar" aria-label="Legenda">
+				<h3>Zlewiska</h3>
+				<table id="legend">
+					<tbody>
+						<tr data-code="ATL">
+							<td><span class="legend-swatch" data-code-swatch="ATL"></span>Ocean Atlantycki</td>
+						</tr>
+						<tr data-code="NTH">
+							<td><span class="legend-swatch" data-code-swatch="NTH"></span>Morze Pólnocne</td>
+						</tr>
+						<tr data-code="BLT">
+							<td><span class="legend-swatch" data-code-swatch="BLT"></span>Morze Bałtyckie</td>
+						</tr>
+						<tr data-code="MED">
+							<td><span class="legend-swatch" data-code-swatch="MED"></span>Morze Śródziemne</td>
+						</tr>
+						<tr data-code="BLC">
+							<td><span class="legend-swatch" data-code-swatch="BLC"></span>Morze Czarne</td>
+						</tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+
+		<script src="leaflet.js"></script>
+		<script src="https://unpkg.com/leaflet-geosearch@4.2.2/dist/geosearch.umd.js"></script>
+		<script src="https://unpkg.com/esri-leaflet@3.0.12/dist/esri-leaflet.js"></script>
+		<script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+		<script>
+			const map = L.map('map').setView([54, 15], 4);
+
+			const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+				maxZoom: 19,
+				attribution:
+					'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+			}).addTo(map);
+
+			// GeoSearch (Leaflet GeoSearch + OpenStreetMap provider)
+			if (window.GeoSearch) {
+				const provider = new GeoSearch.OpenStreetMapProvider({
+					params: {
+						// Bias results toward Europe (optional)
+						'accept-language': 'pl',
+					},
+				});
+
+				const searchControl = new GeoSearch.GeoSearchControl({
+					provider,
+					style: 'bar',
+					searchLabel: 'Szukaj miejsca…',
+					autoComplete: true,
+					autoCompleteDelay: 250,
+					showMarker: true,
+					showPopup: false,
+					marker: {
+						icon: new L.Icon.Default(),
+					},
+					animateZoom: true,
+					keepResult: true,
+				});
+
+				map.addControl(searchControl);
+
+				// When user selects a search result, show which basin polygon contains it.
+				map.on('geosearch/showlocation', (evt) => {
+					const loc = evt?.location;
+					if (!loc) return;
+					const latlng = L.latLng(loc.y, loc.x);
+					const placeNameRaw = loc.label ?? loc.raw?.display_name ?? loc.raw?.name ?? `${loc.y}, ${loc.x}`;
+					const placeTitle = escapeHtml(placeNameRaw);
+
+					if (!riverBasinDistricts) {
+						L.popup()
+							.setLatLng(latlng)
+							.setContent(`<strong>${placeTitle}</strong><br/>Zlewnia: n/a`)
+							.openOn(map);
+						return;
+					}
+
+					riverBasinDistricts
+						.query()
+						.intersects(latlng)
+						.run((error, featureCollection) => {
+							let basinName = null;
+							if (!error && featureCollection?.features?.length) {
+								const props = featureCollection.features[0]?.properties ?? {};
+								const key = featureKeyFromProperties(props);
+								basinName = key ? dictById.get(key)?.name : null;
+							}
+
+							L.popup()
+								.setLatLng(latlng)
+								.setContent(`<strong>${placeTitle}</strong><br/>Zlewnia: ${escapeHtml(basinName ?? 'n/a')}`)
+								.openOn(map);
+						});
+				});
+			} else {
+				console.warn('Leaflet GeoSearch failed to load; search box disabled.');
+			}
+
+			function normalizeDictKey(value) {
+				if (value === null || value === undefined) return null;
+				const raw = String(value).trim();
+				if (!raw) return null;
+				if (/^\d+$/.test(raw)) return String(Number(raw));
+				const match = raw.match(/(\d+)/);
+				return match ? String(Number(match[1])) : null;
+			}
+
+			function escapeHtml(value) {
+				return String(value)
+					.replace(/&/g, '&amp;')
+					.replace(/</g, '&lt;')
+					.replace(/>/g, '&gt;')
+					.replace(/"/g, '&quot;')
+					.replace(/'/g, '&#39;');
+			}
+
+			function parseDict(text) {
+				const byId = new Map();
+				const lines = String(text)
+					.split(/\r?\n/)
+					.map((l) => l.trim())
+					.filter((l) => l.length > 0);
+				for (const line of lines) {
+					const parts = line.split(',').map((p) => p.trim()).filter(Boolean);
+					if (parts.length < 2) continue;
+					const id = normalizeDictKey(parts[0]);
+					if (!id) continue;
+					const name = parts[1] ?? '';
+					const lastAttr = (parts[parts.length - 1] ?? '').toUpperCase();
+					byId.set(id, { name, lastAttr, parts });
+				}
+				return byId;
+			}
+
+			// Embedded copy of dict.txt so this page works as a standalone HTML file (file://).
+			const DICT_TEXT = `2, Loara, ATL
+3, Duero, ATL
+4, Tag, ATL
+5, Gwadiana, ATL
+6, Bann, ATL
+7, Północno-zachodni, ATL
+8, Shannon, ATL
+9, Adour, ATL
+10, Kantabria, ATL
+11, Vouga-Mondego, ATL
+12, Saba, ATL
+13, Arade, ATL
+14, Gwadalkiwir, ATL
+15, Zachodni, ATL
+16, Galicja, ATL
+17, Cávado, ATL
+18, Daba, ATL
+19, Troms, NTH
+20, Nordland, NTH
+21, Trøndelag, NTH
+22, Møre and Romsdal, NTH
+23, Severn, ATL
+24, Sekwana, ATL
+25, Południowo-wschodni, ATL
+26, Północno-zachodni, ATL
+27, Południowo-zachodni, ATL
+28, Południowo-zachodni, ATL
+29, Wschodni, ATL
+30, Dee, ATL
+31, Zachodnia Walia, ATL
+32, Południowo-wschodni, ATL
+33, Północno-wschodni, ATL
+34, Glomma, NTH
+35, Łaba, NTH
+36, Wezera, NTH
+37, Ren, NTH
+38, Agder-Rogaland, NTH
+39, Vest-Viken, NTH
+40, Jutlandia, NTH
+41, Eider, NTH
+42, Ems, NTH
+43, Moza, NTH
+44, Skalda, NTH
+45, Tamiza, NTH
+46, Humber, NTH
+47, Sogn og Fjordane-Hordaland, NTH
+48, Anglia, NTH
+49, Nortumbria, NTH
+50, Tweed, NTH
+51, Szkocja, NTH
+52, Newa, BLT
+53, Niemen, BLT
+54, Wisła, BLT
+55, Odra, BLT
+56, Västerhavet, NTH
+57, Bottenviken, BLT
+58, Kemijoki, BLT
+59, Kymijoki, BLT
+60, Narwa, BLT
+61, Dźwina, BLT
+62, Lelupa, BLT
+63, Pregoła, BLT
+64, Warnow, BLT
+65, Trave, BLT
+66, Bottenhavet, BLT
+67, Oulijoki-Lijoki, BLT
+68, Kokemäenjoki, BLT
+69, Estonia, BLT
+70, Gauja, BLt
+71, Windawa, BLT
+72, Świeża, BLT
+73, Jarft, BLT
+74, Södra Östersjön, BLT
+75, Norra Östersjön, BLT
+76, Zelandia, BLT
+77, Bornholm, BLT
+78, Wyspy Alandzkie, BLT
+79, Júcar, MED
+80, Ebro, MED
+81, Rodan, MED
+82, Środkowe Apeniny, MED
+83, Anadaluzja, MED
+84, Segura, MED
+85, Katalonia, MED
+86, Północne Apeniny, MED
+87, Południowe Apeniny, MED
+88, Serchio, MED
+89, Baleary, MED
+90, Korsyka, MED
+91, Sardynia, MED
+92, Pad, MED
+93, Marica, MED
+94, Sycylia, MED
+95, Struma, MED
+96, Wschodnie Alpy, MED
+98, Pinios, MED
+99, Aliakmon, MED
+100, Wardar, MED
+101, Epir, MED
+102, Acheloos, MED
+103, Alfios, MED
+104, Grecja Środkowa, MED
+105, Północny Peloponez, MED
+106, Ewrotas, MED
+107, Attyka, MED
+108, Malta, MED
+109, Kreta, MED
+110, Wyspy Egiejskie, MED
+111, Cypr, MED
+112, Dunaj, BLC
+113, Prowadijska reka, BLC
+114, Dniestr, BLC
+116, Finnmark, NTH
+117, Madera, ATL
+118, Wyspy Kanaryjskie, ATL`;
+
+			function colorForLastAttr(lastAttr) {
+				const key = String(lastAttr || '').toUpperCase();
+				const palette = {
+					ATL: '#1f77b4',
+					MED: '#ff7f0e',
+					NTH: '#2ca02c',
+					BLT: '#9467bd',
+					BLC: '#d62728',
+				};
+				return palette[key] ?? '#0069c2';
+			}
+
+			function darkenHexColor(hex, amount = 0.25) {
+				const raw = String(hex || '').trim();
+				const match = raw.match(/^#?([0-9a-fA-F]{6})$/);
+				if (!match) return raw;
+				const s = match[1];
+				const r = parseInt(s.slice(0, 2), 16);
+				const g = parseInt(s.slice(2, 4), 16);
+				const b = parseInt(s.slice(4, 6), 16);
+				const factor = Math.min(1, Math.max(0, 1 - amount));
+				const toHex = (n) => Math.round(n).toString(16).padStart(2, '0');
+				return `#${toHex(r * factor)}${toHex(g * factor)}${toHex(b * factor)}`;
+			}
+
+			function lastAttrForFeature(feature) {
+				const props = feature?.properties ?? {};
+				const key = featureKeyFromProperties(props);
+				return key ? dictById.get(key)?.lastAttr ?? null : null;
+			}
+
+			function featureFromLayer(layer) {
+				return layer?.feature ?? (layer?.toGeoJSON ? layer.toGeoJSON() : null);
+			}
+
+			function featureKeyFromProperties(props) {
+				// The dictionary keys are based on ArcGIS OBJECTID.
+				return normalizeDictKey(props?.OBJECTID);
+			}
+
+			function formatAreaFromFeature(feature) {
+				const areaGeodesicM2 = window.turf ? window.turf.area(feature) : NaN;
+				const areaGeodesicKm2 = Number.isFinite(areaGeodesicM2) ? areaGeodesicM2 / 1_000_000 : NaN;
+				return Number.isFinite(areaGeodesicKm2)
+					? areaGeodesicKm2.toLocaleString(undefined, { maximumFractionDigits: 2 }) + ' km²'
+					: 'n/a';
+			}
+
+			// ArcGIS REST
+			const arcgisRestMapServer =
+				'https://water.discomap.eea.europa.eu/arcgis/rest/services/Ecrins/ECRINS_FunctionalElementaryCatchments/MapServer';
+			// FunctionalRiverBasinDistricts_WM is MapServer layer id 0.
+			// We use Esri-Leaflet FeatureLayer (pjson).
+			const defaultBasinStyle = {
+				color: '#0069c2',
+				weight: 1.5,
+				fillColor: '#0069c2',
+				fillOpacity: 0.08,
+			};
+			const hoverBasinStyle = {
+				color: '#ffb000',
+				weight: 3,
+				fillColor: '#ffb000',
+				fillOpacity: 0.18,
+			};
+			let hoveredLayer = null;
+			let dictById = new Map();
+			let riverBasinDistricts = null;
+			let activeRegionCode = null;
+			const layersByObjectId = new Map();
+
+			function getBasinStyle(feature) {
+				const props = feature?.properties ?? {};
+				const key = featureKeyFromProperties(props);
+				const lastAttr = key ? dictById.get(key)?.lastAttr : null;
+				const fillColor = colorForLastAttr(lastAttr);
+				return {
+					...defaultBasinStyle,
+					fillColor,
+					color: fillColor,
+				};
+			}
+
+			function getRegionHighlightStyle(feature) {
+				const base = getBasinStyle(feature);
+				const darker = darkenHexColor(base.fillColor ?? base.color, 0.35);
+				return {
+					...base,
+					color: darker,
+					fillColor: darker,
+					opacity: 1,
+					weight: 4,
+					// Make the highlight clearly visible (users often interpret “less opacity” as “less transparent”).
+					fillOpacity: 0.18,
+				};
+			}
+
+			function getDisplayStyle(feature) {
+				const region = lastAttrForFeature(feature);
+				if (activeRegionCode && region && region.toUpperCase() === activeRegionCode) {
+					return getRegionHighlightStyle(feature);
+				}
+				return getBasinStyle(feature);
+			}
+
+			function refreshBasinStyles() {
+				if (!riverBasinDistricts) return;
+				// Preferred path: let Esri-Leaflet rebuild styles per feature.
+				if (typeof riverBasinDistricts.setStyle === 'function') {
+					riverBasinDistricts.setStyle((feature) => getDisplayStyle(feature));
+					// Re-apply explicit hover styling on top.
+					if (hoveredLayer?.setStyle) {
+						hoveredLayer.setStyle(getRegionHighlightStyle(featureFromLayer(hoveredLayer)));
+					}
+					return;
+				}
+
+				// Fallback: restyle rendered Leaflet path layers.
+				layersByObjectId.forEach((layer) => {
+					if (!layer?.setStyle) return;
+					if (hoveredLayer && layer === hoveredLayer) return;
+					layer.setStyle(getDisplayStyle(featureFromLayer(layer)));
+				});
+			}
+
+			function applyRegionHighlight(codeOrNull) {
+				activeRegionCode = codeOrNull ? String(codeOrNull).toUpperCase() : null;
+				refreshBasinStyles();
+			}
+
+			function clearHover() {
+				if (hoveredLayer && hoveredLayer.setStyle) {
+					hoveredLayer.setStyle(getDisplayStyle(featureFromLayer(hoveredLayer)));
+				}
+				hoveredLayer = null;
+				// If a region highlight is active, restore it for all other features.
+				if (activeRegionCode) refreshBasinStyles();
+			}
+
+			(() => {
+				dictById = parseDict(DICT_TEXT);
+				const allowedObjectIds = Array.from(dictById.keys())
+					.map((k) => Number(k))
+					.filter((n) => Number.isFinite(n));
+				const whereClause = allowedObjectIds.length
+					? `OBJECTID IN (${allowedObjectIds.join(',')})`
+					: '1=0';
+
+				riverBasinDistricts = L.esri
+					.featureLayer({
+						url: `${arcgisRestMapServer}/0`,
+						where: whereClause,
+						style: (feature) => getBasinStyle(feature),
+					})
+					.addTo(map);
+
+				// Keep an index of rendered feature layers so we can reliably restyle them.
+				riverBasinDistricts.on('createfeature', (e) => {
+					const props = e?.feature?.properties ?? {};
+					const objectId = normalizeDictKey(props?.OBJECTID);
+					if (!objectId || !e?.layer) return;
+					layersByObjectId.set(objectId, e.layer);
+				});
+				riverBasinDistricts.on('removefeature', (e) => {
+					const props = e?.feature?.properties ?? {};
+					const objectId = normalizeDictKey(props?.OBJECTID);
+					if (!objectId) return;
+					layersByObjectId.delete(objectId);
+				});
+
+				riverBasinDistricts.query().where(whereClause).bounds((error, bounds) => {
+					if (!error && bounds) map.fitBounds(bounds.pad(0.05));
+				});
+				L.control
+					.layers(
+						{ OpenStreetMap: osm },
+						{
+							'FunctionalRiverBasinDistricts_WM': riverBasinDistricts,
+						},
+						{ collapsed: false }
+					)
+					.addTo(map);
+
+				riverBasinDistricts.on('click', (e) => {
+					const feature = e?.layer?.feature;
+					const p = feature?.properties ?? {};
+					const key = featureKeyFromProperties(p);
+					const mappedName = key ? dictById.get(key)?.name : null;
+					const title = mappedName ?? 'n/a';
+
+					L.popup()
+						.setLatLng(e.latlng)
+						.setContent(
+							`<strong>${title}</strong><br/>Powierzchnia: ${formatAreaFromFeature(feature)}`
+						)
+						.openOn(map);
+				});
+
+				riverBasinDistricts.on('mouseover', (e) => {
+					if (!e?.layer?.setStyle) return;
+					if (hoveredLayer && hoveredLayer !== e.layer) {
+						clearHover();
+					}
+					hoveredLayer = e.layer;
+					// Use the same region-highlight style when hovering an individual basin.
+					e.layer.setStyle(getRegionHighlightStyle(featureFromLayer(e.layer)));
+					if (e.layer.bringToFront) e.layer.bringToFront();
+				});
+
+				riverBasinDistricts.on('mouseout', (e) => {
+					if (!e?.layer?.setStyle) return;
+					if (hoveredLayer === e.layer) {
+						clearHover();
+					} else {
+						e.layer.setStyle(getDisplayStyle(featureFromLayer(e.layer)));
+					}
+				});
+
+				// Initialize legend swatches and hover behavior.
+				document.querySelectorAll('[data-code-swatch]').forEach((el) => {
+					const code = el.getAttribute('data-code-swatch');
+					el.style.background = colorForLastAttr(code);
+				});
+				document.querySelectorAll('#legend tr[data-code]').forEach((row) => {
+					const code = row.getAttribute('data-code');
+					row.addEventListener('mouseenter', () => applyRegionHighlight(code));
+					row.addEventListener('mouseleave', () => applyRegionHighlight(null));
+				});
+			})();
+
+			// Mouseout doesn't always fire (e.g. during map drag/zoom), so clear highlight then.
+			map.on('dragstart zoomstart movestart', clearHover);
+		</script>
+	</body>
+</html>
