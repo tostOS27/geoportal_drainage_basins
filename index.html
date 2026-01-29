@@ -26,6 +26,22 @@
 				height: 100%;
 				width: 100%;
 			}
+			#mapTitle {
+				position: absolute;
+				top: 12px;
+				left: 56px;
+				z-index: 1001;
+				padding: 8px 12px;
+				border-radius: 10px;
+				background: rgba(255, 255, 255, 0.92);
+				border: 1px solid rgba(0, 0, 0, 0.12);
+				box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
+				font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+				font-size: 30px;
+				font-weight: 800;
+				line-height: 1.2;
+				pointer-events: none;
+			}
 			#sidebar {
 				position: absolute;
 				top: 110px;
@@ -124,6 +140,16 @@
 				attribution:
 					'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
 			}).addTo(map);
+
+			// Photomap ArcGIS
+			const ortho = L.tileLayer(
+				'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+				{
+					maxZoom: 19,
+					attribution:
+						'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+				}
+			);
 
 			// GeoSearch (Leaflet GeoSearch + OpenStreetMap provider)
 			if (window.GeoSearch) {
@@ -564,11 +590,11 @@
 				});
 				L.control
 					.layers(
-						{ OpenStreetMap: osm },
+						{ OpenStreetMap: osm, ArcGIS_World_Imagery: ortho },
 						{
 							'FunctionalRiverBasinDistricts_WM': riverBasinDistricts,
 						},
-						{ collapsed: false }
+						{ collapsed: true }
 					)
 					.addTo(map);
 
@@ -624,3 +650,4 @@
 		</script>
 	</body>
 </html>
+
